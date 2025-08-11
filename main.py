@@ -1,49 +1,133 @@
-import subprocess
+import os
 import sys
 import time
-import os
 import logging
+import subprocess
+import shutil
+import platform
+import getpass
 
-# --- Audit Log Setup ---
-log_file = "script_audit.log"
+# -----------------------
+# Audit logging setup
+# -----------------------
+LOG_FILE = os.path.abspath("script_audit.log")
 logging.basicConfig(
-    filename=log_file,
+    filename=LOG_FILE,
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+console.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+logging.getLogger().addHandler(console)
 
 logging.info("Script started.")
+logging.info("User: %s | Machine: %s | Python: %s", getpass.getuser(), platform.node(), sys.version)
+logging.info("Working dir: %s", os.getcwd())
 
-# Ensure pyautogui is installed
-try:
-    import pyautogui
-    logging.info("pyautogui already installed.")
-except ImportError:
-    logging.warning("pyautogui not found. Installing now...")
+# -----------------------
+# Helper: install a package via pip
+# -----------------------
+def ensure_package(pkg: str):
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyautogui"])
-        import pyautogui
-        logging.info("pyautogui installed successfully.")
+        __import__(pkg)
+        logging.info("Package '%s' already installed.", pkg)
+    except ImportError:
+        logging.warning("Package '%s' not found; installing...", pkg)
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+            __import__(pkg)
+            logging.info("Package '%s' installed successfully.", pkg)
+        except Exception as e:
+            logging.exception("Failed to install '%s': %s", pkg, e)
+            sys.exit(1)
+
+# Ensure pyautogui (and its dependencies) is available
+ensure_package("pyautogui")
+
+# Now we can import it
+import pyautogui
+
+# Optional: make typing a bit safer
+pyautogui.FAILSAFE = True  # move mouse to a corner to abort
+pyautogui.PAUSE = 0.05
+
+# -----------------------
+# Locate Notepad++ (or fall back to Notepad)
+# -----------------------
+def find_notepad_plus_plus():
+    # 1) Check common install locations
+    candidates = [
+        r"C:\Program Files\Notepad++\notepad++.exe",
+        r"C:\Program Files (x86)\Notepad++\notepad++.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Notepad++\notepad++.exe"),
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+
+    # 2) Try Windows registry
+    try:
+        import winreg
+        keys = [
+            r"SOFTWARE\Notepad++",  # 64-bit hive
+            r"SOFTWARE\WOW6432Node\Notepad++",  # 32-bit on 64-bit
+        ]
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for k in keys:
+                try:
+                    with winreg.OpenKey(root, k) as key:
+                        install_dir, _ = winreg.QueryValueEx(key, "DisplayIcon")
+                        if install_dir and os.path.exists(install_dir):
+                            return install_dir
+                except OSError:
+                    continue
+    except Exception:
+        # winreg might not be available or accessible
+        pass
+
+    # 3) Try PATH
+    exe = shutil.which("notepad++") or shutil.which("notepad++.exe")
+    if exe:
+        return exe
+
+    return None
+
+def launch_editor():
+    npp = find_notepad_plus_plus()
+    if npp and os.path.exists(npp):
+        logging.info("Launching Notepad++ at: %s", npp)
+        try:
+            subprocess.Popen([npp])
+            return "notepad++"
+        except Exception as e:
+            logging.exception("Failed to launch Notepad++: %s", e)
+
+    logging.warning("Notepad++ not found. Falling back to Windows Notepad.")
+    # Launch plain Notepad as a fallback so the script still works
+    try:
+        subprocess.Popen(["notepad.exe"])
+        return "notepad"
     except Exception as e:
-        logging.error(f"Failed to install pyautogui: {e}")
+        logging.exception("Failed to launch Notepad as well: %s", e)
         sys.exit(1)
 
-# Path to Notepad++ executable
-notepad_plus_path = r"C:\Program Files\Notepad++\notepad++.exe"
+editor = launch_editor()
 
-if not os.path.exists(notepad_plus_path):
-    logging.error(f"Notepad++ not found at: {notepad_plus_path}")
-    raise FileNotFoundError(f"Notepad++ not found at: {notepad_plus_path}")
+# -----------------------
+# Give the window time / focus and type
+# -----------------------
+# If your machine is slower or if plugins load in Notepad++, increase this.
+delay_seconds = 3 if editor == "notepad++" else 2
+logging.info("Waiting %s seconds for the editor to be ready...", delay_seconds)
+time.sleep(delay_seconds)
 
-# Open Notepad++
-logging.info("Launching Notepad++...")
-subprocess.Popen([notepad_plus_path])
+try:
+    logging.info("Typing 'Hello World'...")
+    pyautogui.write("Hello World", interval=0.05)
+    logging.info("Typing complete.")
+except Exception as e:
+    logging.exception("Typing failed: %s", e)
+    sys.exit(1)
 
-# Wait for Notepad++ to open
-time.sleep(2)  # Adjust if needed
-
-# Type "Hello World"
-logging.info("Typing 'Hello World' into Notepad++.")
-pyautogui.typewrite("Hello World", interval=0.05)
-
-logging.info("Script finished successfully.")
+logging.info("Script finished successfully. Log written to: %s", LOG_FILE)
