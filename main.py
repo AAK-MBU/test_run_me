@@ -7,9 +7,7 @@ import shutil
 import platform
 import getpass
 
-# -----------------------
-# Audit logging setup
-# -----------------------
+# ---------- Audit log ----------
 LOG_FILE = os.path.abspath("script_audit.log")
 logging.basicConfig(
     filename=LOG_FILE,
@@ -21,42 +19,41 @@ console.setLevel(logging.INFO)
 console.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logging.getLogger().addHandler(console)
 
-logging.info("Script started.")
-logging.info("User: %s | Machine: %s | Python: %s", getpass.getuser(), platform.node(), sys.version)
-logging.info("Working dir: %s", os.getcwd())
+logging.info("Script started. User=%s Machine=%s Python=%s CWD=%s",
+             getpass.getuser(), platform.node(), sys.version, os.getcwd())
 
-# -----------------------
-# Helper: install a package via pip
-# -----------------------
-def ensure_package(pkg: str):
+# ---------- Headless detection ----------
+def is_headless():
     try:
-        __import__(pkg)
-        logging.info("Package '%s' already installed.", pkg)
-    except ImportError:
-        logging.warning("Package '%s' not found; installing...", pkg)
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-            __import__(pkg)
-            logging.info("Package '%s' installed successfully.", pkg)
-        except Exception as e:
-            logging.exception("Failed to install '%s': %s", pkg, e)
-            sys.exit(1)
+        import ctypes
+        user32 = ctypes.windll.user32
+        return user32.GetSystemMetrics(0) == 0 or user32.GetSystemMetrics(1) == 0
+    except Exception:
+        return True
 
-# Ensure pyautogui (and its dependencies) is available
-ensure_package("pyautogui")
+HEADLESS = os.environ.get("FORCE_HEADLESS") == "1" or is_headless()
 
-# Now we can import it
-import pyautogui
+if HEADLESS:
+    logging.warning("No interactive desktop detected. Using headless fallback.")
+    out = os.path.abspath("hello_world.txt")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("Hello World")
+    logging.info("Wrote %s", out)
+    logging.info("Finished (headless). Log: %s", LOG_FILE)
+    sys.exit(0)
 
-# Optional: make typing a bit safer
-pyautogui.FAILSAFE = True  # move mouse to a corner to abort
+# ---------- Import pyautogui (must be installed via requirements.txt) ----------
+try:
+    import pyautogui
+except ImportError:
+    logging.error("pyautogui is not installed. Run: pip install -r requirements.txt")
+    sys.exit(1)
+
+pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.05
 
-# -----------------------
-# Locate Notepad++ (or fall back to Notepad)
-# -----------------------
-def find_notepad_plus_plus():
-    # 1) Check common install locations
+# ---------- Find Notepad++ or fallback ----------
+def find_npp():
     candidates = [
         r"C:\Program Files\Notepad++\notepad++.exe",
         r"C:\Program Files (x86)\Notepad++\notepad++.exe",
@@ -65,69 +62,24 @@ def find_notepad_plus_plus():
     for p in candidates:
         if p and os.path.exists(p):
             return p
+    return shutil.which("notepad++") or shutil.which("notepad++.exe")
 
-    # 2) Try Windows registry
-    try:
-        import winreg
-        keys = [
-            r"SOFTWARE\Notepad++",  # 64-bit hive
-            r"SOFTWARE\WOW6432Node\Notepad++",  # 32-bit on 64-bit
-        ]
-        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            for k in keys:
-                try:
-                    with winreg.OpenKey(root, k) as key:
-                        install_dir, _ = winreg.QueryValueEx(key, "DisplayIcon")
-                        if install_dir and os.path.exists(install_dir):
-                            return install_dir
-                except OSError:
-                    continue
-    except Exception:
-        # winreg might not be available or accessible
-        pass
+editor = find_npp()
+if editor and os.path.exists(editor):
+    logging.info("Launching Notepad++: %s", editor)
+    subprocess.Popen([editor])
+else:
+    logging.warning("Notepad++ not found. Launching Notepad.")
+    subprocess.Popen(["notepad.exe"])
 
-    # 3) Try PATH
-    exe = shutil.which("notepad++") or shutil.which("notepad++.exe")
-    if exe:
-        return exe
-
-    return None
-
-def launch_editor():
-    npp = find_notepad_plus_plus()
-    if npp and os.path.exists(npp):
-        logging.info("Launching Notepad++ at: %s", npp)
-        try:
-            subprocess.Popen([npp])
-            return "notepad++"
-        except Exception as e:
-            logging.exception("Failed to launch Notepad++: %s", e)
-
-    logging.warning("Notepad++ not found. Falling back to Windows Notepad.")
-    # Launch plain Notepad as a fallback so the script still works
-    try:
-        subprocess.Popen(["notepad.exe"])
-        return "notepad"
-    except Exception as e:
-        logging.exception("Failed to launch Notepad as well: %s", e)
-        sys.exit(1)
-
-editor = launch_editor()
-
-# -----------------------
-# Give the window time / focus and type
-# -----------------------
-# If your machine is slower or if plugins load in Notepad++, increase this.
-delay_seconds = 3 if editor == "notepad++" else 2
-logging.info("Waiting %s seconds for the editor to be ready...", delay_seconds)
-time.sleep(delay_seconds)
+time.sleep(3)
 
 try:
     logging.info("Typing 'Hello World'...")
     pyautogui.write("Hello World", interval=0.05)
-    logging.info("Typing complete.")
+    logging.info("Done typing.")
 except Exception as e:
     logging.exception("Typing failed: %s", e)
     sys.exit(1)
 
-logging.info("Script finished successfully. Log written to: %s", LOG_FILE)
+logging.info("Finished. Log: %s", LOG_FILE)
