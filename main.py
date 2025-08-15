@@ -72,11 +72,11 @@ else:
     logging.warning("Notepad++ not found. Launching Notepad.")
     subprocess.Popen(["notepad.exe"])
 
-time.sleep(3)
+time.sleep(5)
 
 try:
     logging.info("Typing 'Hello World'...")
-    pyautogui.write("Hello World", interval=0.05)
+    pyautogui.write("Hello World", interval=0.20)
     logging.info("Done typing.")
 except Exception as e:
     logging.exception("Typing failed: %s", e)
