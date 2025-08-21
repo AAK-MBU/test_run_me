@@ -19,9 +19,6 @@ ON_WINDOWS = os.name == "nt"
 def venv_python_path(venv_dir: Path) -> Path:
     return venv_dir / ("Scripts/python.exe" if ON_WINDOWS else "bin/python")
 
-def venv_pip_path(venv_dir: Path) -> Path:
-    return venv_dir / ("Scripts/pip.exe" if ON_WINDOWS else "bin/pip")
-
 # ---------- Audit log ----------
 LOG_FILE = str(ROOT / "script_audit.log")
 logging.basicConfig(
@@ -39,7 +36,9 @@ logging.info(
     getpass.getuser(), platform.node(), sys.version, os.getcwd(), IN_VENV
 )
 
+# ---------- Helpers ----------
 def safe_rmtree(path: Path, retries: int = 5, delay: float = 0.5):
+    """Robustly delete a directory tree with retries (helps on Windows)."""
     for i in range(retries):
         try:
             if path.exists():
@@ -55,46 +54,72 @@ def safe_rmtree(path: Path, retries: int = 5, delay: float = 0.5):
     if path.exists():
         logging.warning("Could not fully remove %s; some files may remain.", path)
 
-def bootstrap_and_reexec():
-    if not VENV_DIR.exists():
-        logging.info("Creating virtual environment at %s", VENV_DIR)
-        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
-    else:
-        logging.info("Virtual environment already exists at %s", VENV_DIR)
-
-    pip = str(venv_pip_path(VENV_DIR))
-    logging.info("Upgrading pip in venv...")
-    subprocess.check_call([pip, "install", "--upgrade", "pip", "wheel", "setuptools"])
-
-    if REQ_FILE.exists():
-        logging.info("Installing requirements from %s", REQ_FILE)
-        subprocess.check_call([pip, "install", "-r", str(REQ_FILE)])
-    else:
-        logging.warning("No requirements.txt found at %s", REQ_FILE)
-
+def run_py_in_venv(args, env=None):
+    """
+    Run `<venv python> args...` and raise on failure.
+    Example: run_py_in_venv(["-m", "pip", "install", "-r", "requirements.txt"])
+    """
     vpy = str(venv_python_path(VENV_DIR))
-    logging.info("Re-launching script inside venv: %s", vpy)
-    env = os.environ.copy()
-    env["IN_VENV"] = "1"
-    args = [vpy, str(THIS_FILE), *sys.argv[1:]]
-    result = subprocess.call(args, env=env)
-    logging.info("Inner run exited with code %s", result)
+    full = [vpy] + args
+    logging.info("Running: %s", " ".join(full))
+    subprocess.check_call(full, env=env)
 
-    logging.info("Removing virtual environment at %s", VENV_DIR)
-    safe_rmtree(VENV_DIR)
-
-    sys.exit(result)
-
-if not IN_VENV:
+def bootstrap_and_reexec():
+    """Create venv, install deps, then re-run this script inside it. Clean up venv afterwards."""
+    created = False
     try:
-        bootstrap_and_reexec()
+        # 1) Create venv if missing
+        if not VENV_DIR.exists():
+            logging.info("Creating virtual environment at %s", VENV_DIR)
+            subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+            created = True
+        else:
+            logging.info("Virtual environment already exists at %s", VENV_DIR)
+
+        # Prepare env (avoid pip version check noise)
+        pip_env = os.environ.copy()
+        pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+
+        # 2) Upgrade pip/wheel/setuptools via `python -m pip` (preferred on 3.13+)
+        try:
+            logging.info("Upgrading pip in venv (python -m pip)…")
+            run_py_in_venv(["-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=pip_env)
+        except subprocess.CalledProcessError as e:
+            logging.warning("pip upgrade failed (continuing): %s", e)
+
+        # 3) Install from requirements.txt if present
+        if REQ_FILE.exists():
+            logging.info("Installing requirements from %s", REQ_FILE)
+            run_py_in_venv(["-m", "pip", "install", "-r", str(REQ_FILE)], env=pip_env)
+        else:
+            logging.warning("No requirements.txt found at %s; continuing without installs.", REQ_FILE)
+
+        # 4) Re-run this script using the venv's Python
+        vpy = str(venv_python_path(VENV_DIR))
+        logging.info("Re-launching script inside venv: %s", vpy)
+        env = os.environ.copy()
+        env["IN_VENV"] = "1"
+        args = [vpy, str(THIS_FILE), *sys.argv[1:]]
+        result = subprocess.call(args, env=env)
+        logging.info("Inner run exited with code %s", result)
+        exit_code = result
     except subprocess.CalledProcessError as e:
         logging.exception("Bootstrap failed: %s", e)
+        exit_code = e.returncode if hasattr(e, "returncode") else 1
+    finally:
+        # 5) Delete venv after inner run or bootstrap failure
         if VENV_DIR.exists():
+            logging.info("Removing virtual environment at %s", VENV_DIR)
             safe_rmtree(VENV_DIR)
-        sys.exit(e.returncode if hasattr(e, "returncode") else 1)
+        elif created:
+            logging.info("Venv was created but no longer exists at cleanup time.")
+    sys.exit(exit_code)
 
-# ---------- Main logic (inside venv) ----------
+# ---------- Bootstrap phase (outer) ----------
+if not IN_VENV:
+    bootstrap_and_reexec()
+
+# ---------- Main logic (runs INSIDE the venv) ----------
 def is_headless():
     try:
         import ctypes
@@ -114,6 +139,7 @@ if HEADLESS:
     logging.info("Finished (headless). Log: %s", LOG_FILE)
     sys.exit(0)
 
+# ---------- Import pyautogui (installed in venv) ----------
 try:
     import pyautogui
 except ImportError:
