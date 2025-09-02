@@ -1,18 +1,52 @@
 import subprocess
 import sys
 import time
+import shutil
+import importlib.util
 
-def install_dependencies():
-    """Install required dependencies if missing."""
-    try:
-        import pyautogui  # noqa
-    except ImportError:
-        print("pyautogui not found. Installing...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyautogui"])
-        print("pyautogui installed successfully.")
+DEPENDENCIES = ["pyautogui"]
+
+
+def _check_uv_available():
+    if shutil.which("uv") is None:
+        raise RuntimeError(
+            "The 'uv' CLI is not available on PATH. "
+            "Install it and try again."
+        )
+
+
+def _missing_packages(names):
+    missing = []
+    for name in names:
+        if importlib.util.find_spec(name) is None:
+            missing.append(name)
+    return missing
+
+
+def ensure_dependencies_with_uv(packages):
+    """Install missing packages using uv-only (and pip via `uv pip`)."""
+    _check_uv_available()
+
+    to_install = _missing_packages(packages)
+    if not to_install:
+        return
+
+    python = sys.executable
+
+    subprocess.run(
+        ["uv", "pip", "install", "--python", python, "--upgrade", "pip"],
+        check=True,
+    )
+
+    subprocess.run(
+        ["uv", "pip", "install", "--python", python, *to_install],
+        check=True,
+    )
+
 
 def run():
-    """Do the primary process of the robot."""
+    ensure_dependencies_with_uv(DEPENDENCIES)
+
     import pyautogui
 
     print("HEY!!!!!")
@@ -22,6 +56,4 @@ def run():
 
 
 if __name__ == "__main__":
-    install_dependencies()
     run()
-
