@@ -1,30 +1,44 @@
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
-import shutil
 
-def ensure_pyautogui():
-    """Install pyautogui into this interpreter using uv pip if missing."""
-    try:
-        import pyautogui  # noqa
-    except ImportError:
-        if shutil.which("uv") is None:
-            raise RuntimeError("uv CLI not found on PATH")
-        subprocess.run(
-            ["uv", "pip", "install", "--python", sys.executable, "pyautogui"],
-            check=True,
-        )
+import pyautogui  # already installed via requirements.txt
+
+def find_notepad_plus():
+    hit = shutil.which("notepad++.exe")
+    if hit:
+        return hit
+
+    candidates = [
+        r"C:\Program Files\Notepad++\notepad++.exe",
+        r"C:\Program Files (x86)\Notepad++\notepad++.exe",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+
+    npp_env = os.environ.get("NPP_PATH")
+    if npp_env and os.path.exists(npp_env):
+        return npp_env
+    return None
 
 def run():
-    ensure_pyautogui()
-    import pyautogui
+    print("Im running...")
+    npp = find_notepad_plus()
+    if not npp:
+        tmp = os.path.join(tempfile.gettempdir(), "hello_from_worker.txt")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("Hello World")
+        print(f"Notepad++ not found. Wrote {tmp} instead.")
+        sys.exit(0)
 
-    print("HEY!!!!!")
-
-    subprocess.Popen(["notepad++.exe"])
+    subprocess.Popen([npp])
     time.sleep(3)
-
     pyautogui.write("Hello World", interval=0.2)
+    print("I ended =)")
 
 if __name__ == "__main__":
     run()
